@@ -3348,21 +3348,36 @@ async function autoUploadToFeishu(allResults) {
         body: JSON.stringify({ app_token: cfg.appToken, table_id: cfg.tableId, records: oldRecords })
       });
     }
-    // 上传新预测记录（一场比赛一行，包含所有玩法）
+    // 上传新预测记录（一场比赛一行，每个玩法单独一列）
     allResults.forEach(m => {
-      // 把所有玩法预测整理成字符串
-      const picks = m.plays.map(p => {
-        const modeName = PLAYS[p.mode] ? PLAYS[p.mode].name : p.mode;
-        return `${modeName}:${p.opt}@${p.odds}`;
-      }).join(' | ');
+      // 按玩法分类
+      const playMap = {};
+      m.plays.forEach(p => {
+        playMap[p.mode] = p;
+      });
+      // 信心指数（取最高赔率的倒数作为参考）
+      let confidence = '';
+      if (m.plays.length > 0) {
+        const minOdds = Math.min(...m.plays.map(p => parseFloat(p.odds) || 1));
+        confidence = minOdds <= 1.5 ? '高' : minOdds <= 2.0 ? '中' : '低';
+      }
       uploadPredictionToFeishu({
+        type: 'prediction',
         id: Date.now() + Math.random(),
         time: new Date().toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }),
         matchId: m.label,
         teams: m.teams || '',
         league: m.league || '',
-        mode: picks, // 所有玩法预测
-        pick: m.plays.length > 0 ? m.plays[0].opt : '', // 主推
+        '胜平负': playMap['had'] ? playMap['had'].opt : '',
+        '总进球': playMap['ttg'] ? playMap['ttg'].opt : '',
+        '半全场': playMap['hafu'] ? playMap['hafu'].opt : '',
+        '波胆': playMap['crs'] ? playMap['crs'].opt : '',
+        '胜平负赔率': playMap['had'] ? playMap['had'].odds : '',
+        '总进球赔率': playMap['ttg'] ? playMap['ttg'].odds : '',
+        '半全场赔率': playMap['hafu'] ? playMap['hafu'].odds : '',
+        '波胆赔率': playMap['crs'] ? playMap['crs'].odds : '',
+        '信心指数': confidence,
+        pick: m.plays.length > 0 ? m.plays[0].opt : '',
         odds: m.plays.length > 0 ? m.plays[0].odds : '',
         result: '',
         status: '待赛果',
