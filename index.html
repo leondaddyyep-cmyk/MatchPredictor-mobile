@@ -3026,11 +3026,11 @@ function clearTeamCache() {
 // ===== 飞书多维表格云同步 =====
 function getFeishuConfig() {
   return {
-    proxyUrl: localStorage.getItem('feishuProxyUrl') || '',
+    proxyUrl: localStorage.getItem('feishuProxyUrl') || 'https://feishu-proxy-new.vercel.app',
     appId: localStorage.getItem('feishuAppId') || '',
     appSecret: localStorage.getItem('feishuAppSecret') || '',
-    appToken: localStorage.getItem('feishuAppToken') || '',
-    tableId: localStorage.getItem('feishuTableId') || '',
+    appToken: localStorage.getItem('feishuAppToken') || 'NwQBburvwakAbMskNyPcegyEnFc',
+    tableId: localStorage.getItem('feishuTableId') || 'tblhM9dpY896zfaW',
   };
 }
 function saveFeishuConfig() {
