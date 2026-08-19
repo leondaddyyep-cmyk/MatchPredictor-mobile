@@ -5177,14 +5177,113 @@ setTimeout(() => {
   const cfg = getFeishuConfig();
   if (cfg.appId && cfg.appSecret && cfg.appToken && cfg.tableId && cfg.proxyUrl) {
     syncAppConfigFromFeishu().then(() => {
-      // 拉取完成后自动更新历史数据库
-      autoUpdateHistoricalDatabase();
+      // 拉取完成后自动获取赛果并更新历史数据库
+      autoFetchMatchResults();
     });
   } else {
-    // 没有飞书配置也自动更新本地历史数据库
+    // 没有飞书配置也自动获取赛果
+    autoFetchMatchResults();
+  }
+}, 3000);
+
+// 自动获取已结束比赛的赛果（通过apifootball）
+async function autoFetchMatchResults() {
+  try {
+    const apiKey = localStorage.getItem('apiFootballKey') || 'ad67ebd38dd27b493446425f483f0ec8af58f002ec74f49a5adf78dc0c354c29';
+    if (!apiKey) {
+      autoUpdateHistoricalDatabase();
+      return;
+    }
+    const records = JSON.parse(localStorage.getItem('predictRecords') || '[]');
+    const teamCache = JSON.parse(localStorage.getItem('teamEnCache') || '{}');
+    
+    // 找出未录入赛果的比赛
+    const pendingMatches = [];
+    records.forEach(r => {
+      if (!r.matches || !r.results) return;
+      r.matches.forEach((m, idx) => {
+        const result = r.results[idx];
+        if (!result || result.home === undefined || result.away === undefined) {
+          pendingMatches.push({ record: r, match: m, index: idx });
+        }
+      });
+    });
+    
+    if (pendingMatches.length === 0) {
+      autoUpdateHistoricalDatabase();
+      return;
+    }
+    
+    console.log(`发现 ${pendingMatches.length} 场未录入赛果，正在自动获取...`);
+    
+    // 获取最近3天的比赛结果
+    const today = new Date();
+    let fetched = 0;
+    for (let dayOffset = 0; dayOffset <= 3; dayOffset++) {
+      const date = new Date(today);
+      date.setDate(date.getDate() - dayOffset);
+      const dateStr = date.toISOString().slice(0, 10);
+      
+      try {
+        const res = await fetch(`https://apiv3.apifootball.com/?action=get_events&from=${dateStr}&to=${dateStr}&APIkey=${apiKey}`);
+        const events = await res.json();
+        if (!Array.isArray(events)) continue;
+        
+        // 匹配比赛
+        for (const pm of pendingMatches) {
+          if (pm.record.results[pm.index] && pm.record.results[pm.index].home !== undefined) continue;
+          
+          const homeName = pm.match.teams ? pm.match.teams.split(/[vV][sS]/)[0].trim() : '';
+          const awayName = pm.match.teams ? pm.match.teams.split(/[vV][sS]/)[1].trim() : '';
+          const homeEn = teamCache[homeName] || homeName;
+          const awayEn = teamCache[awayName] || awayName;
+          
+          for (const ev of events) {
+            if (ev.match_status !== 'Finished' && ev.match_status !== 'After Pen.') continue;
+            const evHome = ev.match_hometeam_name || '';
+            const evAway = ev.match_awayteam_name || '';
+            
+            // 模糊匹配球队名称
+            const homeMatch = evHome.toLowerCase().includes(homeEn.toLowerCase()) || homeEn.toLowerCase().includes(evHome.toLowerCase());
+            const awayMatch = evAway.toLowerCase().includes(awayEn.toLowerCase()) || awayEn.toLowerCase().includes(evAway.toLowerCase());
+            
+            if (homeMatch && awayMatch) {
+              const homeScore = parseInt(ev.match_hometeam_score);
+              const awayScore = parseInt(ev.match_awayteam_score);
+              if (!isNaN(homeScore) && !isNaN(awayScore)) {
+                // 录入赛果
+                pm.record.results[pm.index] = {
+                  home: homeScore,
+                  away: awayScore,
+                  halfHome: ev.match_hometeam_halftime_score ? parseInt(ev.match_hometeam_halftime_score.split('-')[0]) : undefined,
+                  halfAway: ev.match_hometeam_halftime_score ? parseInt(ev.match_hometeam_halftime_score.split('-')[1]) : undefined,
+                };
+                fetched++;
+                console.log(`自动录入赛果: ${pm.match.teams} ${homeScore}:${awayScore}`);
+              }
+              break;
+            }
+          }
+        }
+      } catch(e) {
+        console.warn(`获取 ${dateStr} 赛果失败:`, e);
+      }
+    }
+    
+    // 保存更新后的记录
+    localStorage.setItem('predictRecords', JSON.stringify(records));
+    
+    if (fetched > 0) {
+      showToast(`自动录入 ${fetched} 场赛果`);
+    }
+    
+    // 更新历史数据库
+    autoUpdateHistoricalDatabase();
+  } catch(e) {
+    console.warn('自动获取赛果失败:', e);
     autoUpdateHistoricalDatabase();
   }
-}, 2000);
+}
 
 // 自动更新历史数据库（检查是否有新录入的赛果）
 function autoUpdateHistoricalDatabase() {
