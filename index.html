@@ -412,11 +412,24 @@
     background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
     margin-bottom: 10px; overflow: hidden;
   }
+  .record-tabs {
+    display: flex; gap: 8px; padding: 12px 20px 0; border-bottom: 1px solid var(--border);
+  }
+  .record-tab {
+    padding: 8px 16px; border: 1px solid var(--border); background: transparent;
+    color: var(--text-muted); border-radius: 8px 8px 0 0; cursor: pointer; font-size: 13px;
+    border-bottom: none;
+  }
+  .record-tab.active {
+    background: var(--card); color: var(--primary); border-color: var(--primary);
+    font-weight: 600;
+  }
   .record-item-head {
     display: flex; align-items: center; padding: 12px 14px; cursor: pointer; gap: 10px;
+    flex-wrap: wrap;
   }
   .record-item-head:hover { background: var(--card-hover); }
-  .record-item .r-time { flex: 1; font-size: 12px; color: var(--text-muted); }
+  .record-item .r-time { flex: 1; font-size: 12px; color: var(--text-muted); min-width: 80px; }
   .record-item .r-info { font-size: 13px; font-weight: 600; }
   .record-item .r-odds { color: var(--warning); font-weight: 700; font-size: 15px; }
   .record-item .r-del {
@@ -432,14 +445,25 @@
   }
   .rb-match { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.08); }
   .rb-match:last-child { border-bottom: none; }
-  .rb-match-head { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12px; margin-bottom: 4px; }
-  .rb-teams { flex: 1; color: var(--text-muted); font-size: 11px; }
+  .rb-match-head { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12px; margin-bottom: 4px; flex-wrap: wrap; }
+  .rb-teams { flex: 1; color: var(--text-muted); font-size: 11px; min-width: 120px; }
   .rb-score-input { display: flex; align-items: center; gap: 4px; }
   .record-item-body .rb-row:last-child { border-bottom: none; }
   .record-item-body .rb-num { flex: 0 0 40px; font-weight: 700; color: var(--primary); }
   .record-item-body .rb-play { flex: 0 0 60px; color: var(--text-muted); }
   .record-item-body .rb-pick { flex: 1; font-weight: 600; }
   .record-item-body .rb-odds { color: var(--warning); font-weight: 600; }
+  /* 手机端适配 */
+  @media (max-width: 640px) {
+    .record-item-head { padding: 10px 12px; gap: 6px; }
+    .record-item .r-time { order: 3; width: 100%; flex: none; font-size: 11px; margin-top: 4px; }
+    .record-item .r-info { font-size: 14px; flex: 1; }
+    .rb-match-head { padding: 8px 10px; margin-bottom: 6px; }
+    .rb-teams { font-size: 12px; width: 100%; flex: none; margin-bottom: 4px; }
+    .rb-score-input { margin-left: auto; }
+    .record-item-body .rb-row { padding: 8px 4px; font-size: 13px; }
+    .record-item-body .rb-pick { font-size: 14px; }
+  }
   .record-footer {
     padding: 12px 20px; border-top: 1px solid var(--border);
     display: flex; justify-content: space-between; align-items: center;
@@ -881,8 +905,13 @@
       <h3>📋 预测记录与复盘分析</h3>
       <button class="btn-secondary" onclick="closeRecords()">关闭</button>
     </div>
+    <div class="record-tabs">
+      <button class="record-tab active" onclick="switchRecordTab('records')">预测记录</button>
+      <button class="record-tab" onclick="switchRecordTab('history')">历史数据库</button>
+    </div>
     <div class="review-panel" id="reviewPanel"></div>
     <div class="record-list" id="recordList"></div>
+    <div class="history-list" id="historyList" style="display:none;"></div>
     <div class="record-footer">
       <span class="count" id="recordCount">共 0 条</span>
       <div style="display:flex;gap:8px;">
@@ -2835,7 +2864,52 @@ function saveRecord(results, totalOdds, totalCount) {
 function showRecords() {
   renderReviewPanel();
   renderRecordList();
+  renderHistoryDatabase();
   document.getElementById('recordOverlay').classList.add('show');
+}
+function switchRecordTab(tab) {
+  document.querySelectorAll('.record-tab').forEach(b => b.classList.remove('active'));
+  if (tab === 'records') {
+    document.querySelector('.record-tab:nth-child(1)').classList.add('active');
+    document.getElementById('recordList').style.display = 'block';
+    document.getElementById('historyList').style.display = 'none';
+    document.getElementById('reviewPanel').style.display = 'block';
+  } else {
+    document.querySelector('.record-tab:nth-child(2)').classList.add('active');
+    document.getElementById('recordList').style.display = 'none';
+    document.getElementById('historyList').style.display = 'block';
+    document.getElementById('reviewPanel').style.display = 'none';
+  }
+}
+function renderHistoryDatabase() {
+  const stats = getHistoricalStats();
+  const leagues = Object.entries(stats).sort((a, b) => (b[1].count || 0) - (a[1].count || 0));
+  const list = document.getElementById('historyList');
+  let html = `<div style="padding:16px 20px;text-align:center;color:var(--text-muted);font-size:13px;">
+    共收录 <span style="color:var(--primary);font-weight:700;">${leagues.length}</span> 个联赛，
+    <span style="color:var(--success);font-weight:700;">${leagues.reduce((sum, l) => sum + (l[1].count || 0), 0).toLocaleString()}</span> 场比赛
+  </div>`;
+  leagues.forEach(([name, s]) => {
+    html += `<div class="record-item" style="cursor:default;">
+      <div class="record-item-head" style="cursor:default;">
+        <span class="r-info" style="flex:1;">${name}</span>
+        <span class="r-time" style="flex:none;">${s.count || 0}场</span>
+      </div>
+      <div class="record-item-body" style="display:block;padding:10px 14px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;">
+          <div>主胜: <span style="color:var(--success);font-weight:600;">${(s.homeWinRate||0).toFixed(1)}%</span></div>
+          <div>平局: <span style="color:var(--text-muted);font-weight:600;">${(s.drawRate||0).toFixed(1)}%</span></div>
+          <div>客胜: <span style="color:var(--danger);font-weight:600;">${(s.awayWinRate||0).toFixed(1)}%</span></div>
+          <div>场均: <span style="color:var(--warning);font-weight:600;">${(s.avgGoals||0).toFixed(2)}球</span></div>
+        </div>
+        <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);font-size:11px;color:var(--text-muted);">
+          热门比分: ${s.scoreTop ? s.scoreTop.slice(0,3).map(x => x[0]).join(' / ') : '-'}<br>
+          半全场: ${s.hafuTop ? s.hafuTop.slice(0,3).map(x => x[0]).join(' / ') : '-'}
+        </div>
+      </div>
+    </div>`;
+  });
+  list.innerHTML = html;
 }
 function closeRecords() {
   document.getElementById('recordOverlay').classList.remove('show');
