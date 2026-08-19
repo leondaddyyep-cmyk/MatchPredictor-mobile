@@ -3220,19 +3220,12 @@ async function uploadPredictionToFeishu(record) {
   if (!cfg.appId || !cfg.appSecret || !cfg.appToken || !cfg.tableId) return false;
   try {
     const token = await getFeishuToken();
-    const fields = {
-      type: 'prediction',
-      id: record.id.toString(),
-      time: record.time,
-      matchId: record.matchId || '',
-      teams: record.teams || '',
-      league: record.league || '',
-      mode: record.mode || '',
-      pick: record.pick || '',
-      odds: record.odds || '',
-      result: record.result || '',
-      status: record.status || '待赛果',
-    };
+    // 使用传入的所有字段，而不是硬编码
+    const fields = { ...record };
+    // 确保基础字段存在
+    if (!fields.type) fields.type = 'prediction';
+    if (!fields.time) fields.time = new Date().toLocaleString('zh-CN');
+    if (!fields.status) fields.status = '待赛果';
     let data;
     if (cfg.proxyUrl) {
       const res = await fetch(cfg.proxyUrl + '/api/feishu?action=records', {
