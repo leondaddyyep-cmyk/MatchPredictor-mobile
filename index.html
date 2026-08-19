@@ -5290,6 +5290,8 @@ async function autoFetchMatchResults() {
     
     if (fetched > 0) {
       showToast(`自动录入 ${fetched} 场赛果`);
+      // 同步赛果到飞书表格
+      syncMatchResultsToFeishu(records);
     }
     
     // 更新历史数据库
@@ -5297,6 +5299,83 @@ async function autoFetchMatchResults() {
   } catch(e) {
     console.warn('自动获取赛果失败:', e);
     autoUpdateHistoricalDatabase();
+  }
+}
+
+// 同步赛果到飞书表格，更新命中状态
+async function syncMatchResultsToFeishu(records) {
+  const cfg = getFeishuConfig();
+  if (!cfg.appId || !cfg.appSecret || !cfg.appToken || !cfg.tableId || !cfg.proxyUrl) return;
+  try {
+    const token = await getFeishuToken();
+    // 获取飞书表格里所有预测记录
+    let allRecords = [];
+    let pageToken = '';
+    do {
+      const res = await fetch(cfg.proxyUrl + '/api/feishu?action=records', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ app_token: cfg.appToken, table_id: cfg.tableId, page_size: 100, page_token: pageToken })
+      });
+      const data = await res.json();
+      if (data.code === 0 && data.data && data.data.items) {
+        data.data.items.forEach(item => {
+          if (item.fields && item.fields.type === 'prediction') allRecords.push(item);
+        });
+      }
+      pageToken = data.data && data.data.page_token ? data.data.page_token : '';
+    } while (pageToken);
+    
+    // 匹配并更新赛果
+    records.forEach(r => {
+      if (!r.matches || !r.results) return;
+      r.matches.forEach((m, idx) => {
+        const result = r.results[idx];
+        if (!result || result.home === undefined || result.away === undefined) return;
+        
+        // 在飞书记录中查找匹配
+        const match = allRecords.find(item => {
+          const fMatchId = item.fields.matchId || '';
+          const fTeams = item.fields.teams || '';
+          return fMatchId === m.label && fTeams === m.teams;
+        });
+        
+        if (match) {
+          // 判断每个玩法是否命中
+          const statuses = [];
+          m.plays.forEach(p => {
+            const hit = checkPrediction(p.mode, p.opt, result.home, result.away);
+            statuses.push(hit ? '✓' : '✗');
+          });
+          const allHit = statuses.every(s => s === '✓');
+          const anyHit = statuses.some(s => s === '✓');
+          let status = '未中';
+          if (allHit) status = '全中';
+          else if (anyHit) status = '部分中';
+          
+          // 更新飞书记录
+          const updateFields = {
+            '全场比分': `${result.home}:${result.away}`,
+            '赛果': result.home > result.away ? '胜' : result.home < result.away ? '负' : '平',
+            'status': status,
+            'result': `${result.home}:${result.away}`,
+          };
+          fetch(cfg.proxyUrl + '/api/feishu?action=records', {
+            method: 'PUT',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              app_token: cfg.appToken,
+              table_id: cfg.tableId,
+              record_id: match.record_id,
+              fields: updateFields
+            })
+          }).catch(e => console.warn('更新飞书记录失败:', e));
+        }
+      });
+    });
+    console.log('赛果已同步到飞书');
+  } catch(e) {
+    console.warn('同步赛果到飞书失败:', e);
   }
 }
 
