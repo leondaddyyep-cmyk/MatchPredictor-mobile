@@ -2800,7 +2800,13 @@ async function getPredictionStats() {
 // ===== 预测记录 =====
 function saveRecord(results, totalOdds, totalCount) {
   try {
-    const records = JSON.parse(localStorage.getItem('predictRecords') || '[]');
+    let records = JSON.parse(localStorage.getItem('predictRecords') || '[]');
+    // 每天只保留最后一次预测：删除同一天的旧预测
+    const today = new Date().toLocaleDateString('zh-CN');
+    records = records.filter(r => {
+      const rDate = new Date(r.time.replace(/\//g, '-')).toLocaleDateString('zh-CN');
+      return rDate !== today;
+    });
     // 计算串关赔率（兼容新旧格式）
     let minOdds = '0', maxOdds = '0';
     try {
@@ -3236,24 +3242,56 @@ async function syncFromFeishu() {
 // 预测完成后自动上传到飞书
 async function autoUploadToFeishu(allResults) {
   const cfg = getFeishuConfig();
-  if (!cfg.appId || !cfg.appSecret || !cfg.appToken || !cfg.tableId) return;
-  allResults.forEach(m => {
-    m.plays.forEach(p => {
-      uploadPredictionToFeishu({
-        id: Date.now() + Math.random(),
-        time: new Date().toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }),
-        matchId: m.label,
-        teams: m.teams || '',
-        league: m.league || '',
-        mode: PLAYS[p.mode] ? PLAYS[p.mode].name : p.mode,
-        pick: p.opt,
-        odds: p.odds,
-        status: '待赛果',
+  if (!cfg.appId || !cfg.appSecret || !cfg.appToken || !cfg.tableId || !cfg.proxyUrl) return;
+  try {
+    const token = await getFeishuToken();
+    // 先删除当天的旧预测记录
+    const today = new Date().toLocaleDateString('zh-CN');
+    let oldRecords = [];
+    let pageToken = '';
+    do {
+      const res = await fetch(cfg.proxyUrl + '/api/feishu?action=records', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ app_token: cfg.appToken, table_id: cfg.tableId, page_size: 100, page_token: pageToken })
+      });
+      const data = await res.json();
+      if (data.code === 0 && data.data && data.data.items) {
+        data.data.items.forEach(item => {
+          if (item.fields && item.fields.type === 'prediction' && item.fields.time) {
+            const rDate = new Date(item.fields.time.replace(/\//g, '-')).toLocaleDateString('zh-CN');
+            if (rDate === today) oldRecords.push(item.record_id);
+          }
+        });
+      }
+      pageToken = data.data && data.data.page_token ? data.data.page_token : '';
+    } while (pageToken);
+    if (oldRecords.length > 0) {
+      await fetch(cfg.proxyUrl + '/api/feishu?action=records', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ app_token: cfg.appToken, table_id: cfg.tableId, records: oldRecords })
+      });
+    }
+    // 上传新预测记录
+    allResults.forEach(m => {
+      m.plays.forEach(p => {
+        uploadPredictionToFeishu({
+          id: Date.now() + Math.random(),
+          time: new Date().toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }),
+          matchId: m.label,
+          teams: m.teams || '',
+          league: m.league || '',
+          mode: PLAYS[p.mode] ? PLAYS[p.mode].name : p.mode,
+          pick: p.opt,
+          odds: p.odds,
+          status: '待赛果',
+        });
       });
     });
-  });
-  // 同步完整基础配置（API Key、球队缓存、赔率快照）
-  syncAppConfigToFeishu();
+    // 同步完整基础配置（API Key、球队缓存、赔率快照、历史数据库）
+    syncAppConfigToFeishu();
+  } catch(e) { console.warn('飞书上传失败:', e); }
 }
 // 同步球队名缓存到飞书
 async function syncTeamCacheToFeishu() {
@@ -4496,40 +4534,85 @@ function renderRecordList() {
     list.innerHTML = '<div class="record-empty">暂无预测记录</div>';
     return;
   }
-  let html = '';
+  // 按比赛分组：同一场比赛的所有预测放一起
+  const matchMap = {};
   records.forEach(r => {
-    html += `<div class="record-item" id="record-${r.id}">
-      <div class="record-item-head" onclick="toggleRecordExpand(${r.id})">
-        <span class="r-time">${r.time}</span>
-        <span class="r-info">${r.totalCount}串1 · ${r.comboCount||1}注</span>
-        <span class="r-odds">@${r.minOdds||r.totalOdds}~${r.maxOdds||r.totalOdds}</span>
-        <button class="r-del" onclick="event.stopPropagation();deleteRecord(${r.id})">删除</button>
-      </div>
-      <div class="record-item-body">`;
     r.matches.forEach((m, mi) => {
-      const badge = formatBadge(m.label);
-      const saved = r.results && r.results[mi];
-      html += `<div class="rb-match">
-        <div class="rb-match-head">
-          <span class="rb-num">${badge.num}</span>
-          <span class="rb-teams">${m.teams || ''}</span>
-          <span class="rb-score-input">
-            <input type="number" min="0" max="20" placeholder="主" value="${saved?saved.home:''}" 
-              onchange="saveMatchResult(${r.id},${mi},this.value,document.getElementById('away-${r.id}-${mi}').value)" 
-              style="width:36px;text-align:center;background:var(--card-hover);border:1px solid var(--border);border-radius:4px;color:var(--text);">
-            <span style="color:var(--text-muted);">:</span>
-            <input type="number" min="0" max="20" placeholder="客" value="${saved?saved.away:''}" id="away-${r.id}-${mi}"
-              onchange="saveMatchResult(${r.id},${mi},document.querySelector('#record-${r.id} .rb-score-input input').value,this.value)"
-              style="width:36px;text-align:center;background:var(--card-hover);border:1px solid var(--border);border-radius:4px;color:var(--text);">
-          </span>
-        </div>`;
+      const key = `${m.label || ''}_${m.teams || ''}`;
+      if (!matchMap[key]) {
+        matchMap[key] = {
+          label: m.label,
+          teams: m.teams,
+          league: m.league,
+          predictions: [],
+          result: r.results && r.results[mi] ? r.results[mi] : null,
+          recordId: r.id,
+          matchIndex: mi
+        };
+      }
+      // 收集这场比赛的所有玩法预测
       m.plays.forEach(p => {
+        matchMap[key].predictions.push({
+          mode: p.mode,
+          opt: p.opt,
+          odds: p.odds,
+          anti: p.anti,
+          time: r.time
+        });
+      });
+      // 更新最新赛果
+      if (r.results && r.results[mi]) {
+        matchMap[key].result = r.results[mi];
+        matchMap[key].recordId = r.id;
+        matchMap[key].matchIndex = mi;
+      }
+    });
+  });
+  // 按时间排序（最新的在前）
+  const matches = Object.values(matchMap).sort((a, b) => {
+    const aTime = a.predictions.length > 0 ? a.predictions[a.predictions.length-1].time : '';
+    const bTime = b.predictions.length > 0 ? b.predictions[b.predictions.length-1].time : '';
+    return bTime.localeCompare(aTime);
+  });
+  let html = '';
+  matches.forEach(m => {
+    const saved = m.result;
+    const badge = formatBadge(m.label);
+    html += `<div class="record-item">
+      <div class="record-item-head">
+        <span class="r-time">${m.predictions.length > 0 ? m.predictions[m.predictions.length-1].time : ''}</span>
+        <span class="r-info">${badge.num} ${m.teams || ''}</span>
+        <span class="r-info" style="color:var(--text-muted);font-size:11px;">${m.league || ''}</span>
+        <span class="r-score-input">
+          <input type="number" min="0" max="20" placeholder="主" value="${saved?saved.home:''}" 
+            onchange="saveMatchResult(${m.recordId},${m.matchIndex},this.value,document.getElementById('away-${m.recordId}-${m.matchIndex}').value)" 
+            style="width:36px;text-align:center;background:var(--card-hover);border:1px solid var(--border);border-radius:4px;color:var(--text);">
+          <span style="color:var(--text-muted);">:</span>
+          <input type="number" min="0" max="20" placeholder="客" value="${saved?saved.away:''}" id="away-${m.recordId}-${m.matchIndex}"
+            onchange="saveMatchResult(${m.recordId},${m.matchIndex},document.querySelector('#record-${m.recordId} .r-score-input input').value,this.value)"
+            style="width:36px;text-align:center;background:var(--card-hover);border:1px solid var(--border);border-radius:4px;color:var(--text);">
+        </span>
+      </div>
+      <div class="record-item-body" style="display:block;">`;
+    // 按玩法分组展示
+    const playsByMode = {};
+    m.predictions.forEach(p => {
+      if (!playsByMode[p.mode]) playsByMode[p.mode] = [];
+      playsByMode[p.mode].push(p);
+    });
+    Object.entries(playsByMode).forEach(([mode, plays]) => {
+      const modeName = PLAYS[mode] ? PLAYS[mode].name : mode;
+      const modeIcon = PLAYS[mode] ? PLAYS[mode].icon : '📊';
+      html += `<div class="rb-match">
+        <div class="rb-match-head" style="padding:6px 12px;background:var(--card-hover);border-radius:6px;margin-bottom:4px;">
+          <span class="rb-play" style="font-weight:700;">${modeIcon} ${modeName}</span>
+        </div>`;
+      plays.forEach(p => {
         const check = saved ? checkPrediction(p.mode, p.opt, saved.home, saved.away) : null;
         const statusTag = check === true ? '<span style="color:var(--success);font-weight:700;">✓命中</span>' :
                          check === false ? '<span style="color:var(--danger);font-weight:700;">✗未中</span>' :
                          '<span style="color:var(--text-muted);">待赛果</span>';
         html += `<div class="rb-row">
-          <span class="rb-play">${PLAYS[p.mode]?PLAYS[p.mode].name:p.mode}</span>
           <span class="rb-pick">${p.opt}${p.anti?' 🛡️':''}</span>
           <span class="rb-odds">@${p.odds}</span>
           ${statusTag}
@@ -4851,9 +4934,42 @@ initDB().catch(e => console.warn('IndexedDB初始化失败:', e));
 setTimeout(() => {
   const cfg = getFeishuConfig();
   if (cfg.appId && cfg.appSecret && cfg.appToken && cfg.tableId && cfg.proxyUrl) {
-    syncAppConfigFromFeishu();
+    syncAppConfigFromFeishu().then(() => {
+      // 拉取完成后自动更新历史数据库
+      autoUpdateHistoricalDatabase();
+    });
+  } else {
+    // 没有飞书配置也自动更新本地历史数据库
+    autoUpdateHistoricalDatabase();
   }
 }, 2000);
+
+// 自动更新历史数据库（检查是否有新录入的赛果）
+function autoUpdateHistoricalDatabase() {
+  try {
+    const records = JSON.parse(localStorage.getItem('predictRecords') || '[]');
+    const processed = JSON.parse(localStorage.getItem('processedMatchResults') || '[]');
+    const processedSet = new Set(processed);
+    let hasNew = false;
+    records.forEach(record => {
+      if (!record.matches || !record.results) return;
+      record.matches.forEach((m, idx) => {
+        const result = record.results[idx];
+        if (!result || result.home === undefined || result.away === undefined) return;
+        const matchKey = `${m.league || 'unknown'}_${m.teams || ''}_${record.time || ''}_${idx}`;
+        if (!processedSet.has(matchKey)) {
+          hasNew = true;
+        }
+      });
+    });
+    if (hasNew) {
+      console.log('检测到新赛果，自动更新历史数据库');
+      updateHistoricalDatabase();
+    }
+  } catch(e) {
+    console.warn('自动更新历史数据库失败:', e);
+  }
+}
 
 goEntry();
 </script>
