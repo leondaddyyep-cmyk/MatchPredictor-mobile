@@ -3273,25 +3273,85 @@ async function autoUploadToFeishu(allResults) {
         body: JSON.stringify({ app_token: cfg.appToken, table_id: cfg.tableId, records: oldRecords })
       });
     }
-    // 上传新预测记录
+    // 上传新预测记录（一场比赛一行，包含所有玩法）
     allResults.forEach(m => {
-      m.plays.forEach(p => {
-        uploadPredictionToFeishu({
-          id: Date.now() + Math.random(),
-          time: new Date().toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }),
-          matchId: m.label,
-          teams: m.teams || '',
-          league: m.league || '',
-          mode: PLAYS[p.mode] ? PLAYS[p.mode].name : p.mode,
-          pick: p.opt,
-          odds: p.odds,
-          status: '待赛果',
-        });
+      // 把所有玩法预测整理成字符串
+      const picks = m.plays.map(p => {
+        const modeName = PLAYS[p.mode] ? PLAYS[p.mode].name : p.mode;
+        return `${modeName}:${p.opt}@${p.odds}`;
+      }).join(' | ');
+      uploadPredictionToFeishu({
+        id: Date.now() + Math.random(),
+        time: new Date().toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }),
+        matchId: m.label,
+        teams: m.teams || '',
+        league: m.league || '',
+        mode: picks, // 所有玩法预测
+        pick: m.plays.length > 0 ? m.plays[0].opt : '', // 主推
+        odds: m.plays.length > 0 ? m.plays[0].odds : '',
+        result: '',
+        status: '待赛果',
       });
     });
     // 同步完整基础配置（API Key、球队缓存、赔率快照、历史数据库）
     syncAppConfigToFeishu();
+    // 同步历史联赛统计到飞书表格（整理好的，方便查看）
+    syncLeagueStatsToFeishu(token);
   } catch(e) { console.warn('飞书上传失败:', e); }
+}
+// 同步历史联赛统计到飞书表格（整理好的，方便查看）
+async function syncLeagueStatsToFeishu(token) {
+  const cfg = getFeishuConfig();
+  if (!cfg.appId || !cfg.appSecret || !cfg.appToken || !cfg.tableId || !cfg.proxyUrl) return;
+  try {
+    const stats = getHistoricalStats();
+    // 先删除旧的联赛统计
+    let oldRecords = [];
+    let pageToken = '';
+    do {
+      const res = await fetch(cfg.proxyUrl + '/api/feishu?action=records', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ app_token: cfg.appToken, table_id: cfg.tableId, page_size: 100, page_token: pageToken })
+      });
+      const data = await res.json();
+      if (data.code === 0 && data.data && data.data.items) {
+        data.data.items.forEach(item => {
+          if (item.fields && item.fields.type === 'league_stats') oldRecords.push(item.record_id);
+        });
+      }
+      pageToken = data.data && data.data.page_token ? data.data.page_token : '';
+    } while (pageToken);
+    if (oldRecords.length > 0) {
+      await fetch(cfg.proxyUrl + '/api/feishu?action=records', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ app_token: cfg.appToken, table_id: cfg.tableId, records: oldRecords })
+      });
+    }
+    // 上传各联赛统计（每场联赛一行）
+    const leagues = Object.entries(stats).sort((a, b) => (b[1].count || 0) - (a[1].count || 0));
+    for (const [league, s] of leagues) {
+      const fields = {
+        type: 'league_stats',
+        id: 'league_' + league,
+        time: new Date().toLocaleDateString('zh-CN'),
+        matchId: league,
+        teams: `${s.count || 0}场`,
+        league: league,
+        mode: `主胜${(s.homeWinRate||0).toFixed(1)}% 平${(s.drawRate||0).toFixed(1)}% 客胜${(s.awayWinRate||0).toFixed(1)}%`,
+        pick: `场均${(s.avgGoals||0).toFixed(2)}球`,
+        odds: s.scoreTop ? s.scoreTop.slice(0,3).map(x => x[0]).join('/') : '',
+        result: s.hafuTop ? s.hafuTop.slice(0,3).map(x => x[0]).join('/') : '',
+        status: '统计',
+      };
+      await fetch(cfg.proxyUrl + '/api/feishu?action=records', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ app_token: cfg.appToken, table_id: cfg.tableId, fields })
+      });
+    }
+  } catch(e) { console.warn('联赛统计同步失败:', e); }
 }
 // 同步球队名缓存到飞书
 async function syncTeamCacheToFeishu() {
