@@ -2715,10 +2715,19 @@ async function drawAll() {
   });
   saveRecord(allResults, 0, matches.length);
   savePredictionToDB(allResults).catch(e => console.warn('保存预测到DB失败:', e));
-  autoUploadToFeishu(allResults).catch(e => console.warn('飞书上传失败:', e));
+  showToast('预测完成，正在同步飞书...');
+  autoUploadToFeishu(allResults).then(success => {
+    if (success) {
+      showToast('飞书同步成功');
+    } else {
+      showToast('飞书同步失败，请检查网络');
+    }
+  }).catch(e => {
+    console.warn('飞书上传失败:', e);
+    showToast('飞书同步失败: ' + e.message);
+  });
   renderAllResults();
   goStep(3);
-  showToast('预测完成');
 }
 
 // ===== IndexedDB本地数据库 =====
@@ -3364,9 +3373,11 @@ async function autoUploadToFeishu(allResults) {
     });
     // 同步完整基础配置（API Key、球队缓存、赔率快照、历史数据库）
     syncAppConfigToFeishu();
-    // 同步历史联赛统计到飞书表格（整理好的，方便查看）
-    syncLeagueStatsToFeishu(token);
-  } catch(e) { console.warn('飞书上传失败:', e); }
+    return true;
+  } catch(e) { 
+    console.warn('飞书上传失败:', e);
+    return false;
+  }
 }
 // 同步历史联赛统计到飞书表格（整理好的，方便查看）
 async function syncLeagueStatsToFeishu(token) {
