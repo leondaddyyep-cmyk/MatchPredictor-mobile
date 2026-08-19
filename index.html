@@ -3341,23 +3341,23 @@ async function autoUploadToFeishu(allResults) {
         body: JSON.stringify({ app_token: cfg.appToken, table_id: cfg.tableId, records: oldRecords })
       });
     }
-    // 上传新预测记录（一场比赛一行，只保留核心列）
+    // 上传新预测记录（一场比赛一行，预测内容合并显示）
     allResults.forEach(m => {
-      // 按玩法分类
-      const playMap = {};
+      // 把所有玩法预测整理成多行文本
+      const playLines = [];
       m.plays.forEach(p => {
-        playMap[p.mode] = p;
+        const modeName = PLAYS[p.mode] ? PLAYS[p.mode].name : p.mode;
+        playLines.push(`${modeName}: ${p.opt}  @${p.odds}`);
       });
+      const predictionText = playLines.join('\n');
+      
       uploadPredictionToFeishu({
         type: 'prediction',
         time: new Date().toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }),
         matchId: m.label,
         teams: m.teams || '',
         league: m.league || '',
-        '胜平负': playMap['had'] ? playMap['had'].opt : '',
-        '总进球': playMap['ttg'] ? playMap['ttg'].opt : '',
-        '半全场': playMap['hafu'] ? playMap['hafu'].opt : '',
-        '波胆': playMap['crs'] ? playMap['crs'].opt : '',
+        mode: predictionText, // 所有预测合并到一个字段，换行显示
         status: '待赛果',
       });
     });
@@ -5333,8 +5333,7 @@ async function syncMatchResultsToFeishu(records) {
           
           // 更新飞书记录
           const updateFields = {
-            '全场比分': `${result.home}:${result.away}`,
-            '赛果': result.home > result.away ? '胜' : result.home < result.away ? '负' : '平',
+            'result': `${result.home}:${result.away}`,
             'status': status,
           };
           fetch(cfg.proxyUrl + '/api/feishu?action=records', {
