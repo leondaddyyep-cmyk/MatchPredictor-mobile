@@ -994,10 +994,11 @@
         <div class="settings-desc">不断积累比赛赛果，完善历史统计数据库，提升预测准确度。当前已收录 <span id="histLeagueCount">88</span> 个联赛，<span id="histMatchCount">83415</span> 场比赛。</div>
         <div class="settings-actions">
           <button class="btn-primary" onclick="updateHistoricalDatabase()">更新历史数据库</button>
-          <button class="btn-secondary" onclick="exportHistoricalData()">导出历史数据</button>
+          <button class="btn-secondary" onclick="exportHistoricalData()">导出Excel</button>
+          <button class="btn-secondary" onclick="exportNewMatchResults()">导出新赛果</button>
           <span id="histUpdateStatus" class="settings-status"></span>
         </div>
-        <div class="settings-hint" style="margin-top:8px;">录入赛果后点击更新，新赛果会自动合并到对应联赛的历史统计中，数据越多预测越准。</div>
+        <div class="settings-hint" style="margin-top:8px;">录入赛果后点击更新，新赛果会自动合并到对应联赛的历史统计中。导出新赛果后运行桌面「更新历史数据库」脚本，可追加到本地Excel。</div>
       </div>
       <div class="settings-section">
         <div class="settings-title">数据使用说明</div>
@@ -3724,17 +3725,124 @@ function updateHistoricalDatabase() {
     statusEl.className = 'settings-status err';
   }
 }
-// 导出历史数据为JSON
+// 导出历史数据为Excel（多Sheet：联赛统计 + 已录入赛果）
 function exportHistoricalData() {
   const stats = getHistoricalStats();
-  const blob = new Blob([JSON.stringify(stats, null, 2)], { type: 'application/json' });
+  const records = JSON.parse(localStorage.getItem('predictRecords') || '[]');
+  
+  // 收集已录入赛果的比赛
+  const matchResults = [];
+  records.forEach(r => {
+    if (!r.matches || !r.results) return;
+    r.matches.forEach((m, idx) => {
+      const result = r.results[idx];
+      if (!result || result.home === undefined || result.away === undefined) return;
+      matchResults.push({
+        time: r.time,
+        matchId: m.label,
+        league: m.league,
+        teams: m.teams,
+        home: result.home,
+        away: result.away,
+        halfHome: result.halfHome || '',
+        halfAway: result.halfAway || '',
+      });
+    });
+  });
+  
+  // 生成Excel XML（多Sheet）
+  let xml = '<?xml version="1.0"?><?mso-application progid="Excel.Sheet"?>';
+  xml += '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">';
+  
+  // Sheet1: 联赛统计
+  xml += '<Worksheet ss:Name="联赛统计"><Table>';
+  xml += '<Row><Cell><Data ss:Type="String">联赛</Data></Cell><Cell><Data ss:Type="String">场次</Data></Cell><Cell><Data ss:Type="String">主胜%</Data></Cell><Cell><Data ss:Type="String">平局%</Data></Cell><Cell><Data ss:Type="String">客胜%</Data></Cell><Cell><Data ss:Type="String">场均进球</Data></Cell><Cell><Data ss:Type="String">热门比分</Data></Cell><Cell><Data ss:Type="String">半全场TOP</Data></Cell></Row>';
+  const leagues = Object.entries(stats).sort((a, b) => (b[1].count || 0) - (a[1].count || 0));
+  leagues.forEach(([name, s]) => {
+    const scoreTop = s.scoreTop ? s.scoreTop.slice(0,3).map(x => x[0]).join('/') : '';
+    const hafuTop = s.hafuTop ? s.hafuTop.slice(0,3).map(x => x[0]).join('/') : '';
+    xml += `<Row><Cell><Data ss:Type="String">${name}</Data></Cell><Cell><Data ss:Type="Number">${s.count || 0}</Data></Cell><Cell><Data ss:Type="Number">${(s.homeWinRate||0).toFixed(1)}</Data></Cell><Cell><Data ss:Type="Number">${(s.drawRate||0).toFixed(1)}</Data></Cell><Cell><Data ss:Type="Number">${(s.awayWinRate||0).toFixed(1)}</Data></Cell><Cell><Data ss:Type="Number">${(s.avgGoals||0).toFixed(2)}</Data></Cell><Cell><Data ss:Type="String">${scoreTop}</Data></Cell><Cell><Data ss:Type="String">${hafuTop}</Data></Cell></Row>`;
+  });
+  xml += '</Table></Worksheet>';
+  
+  // Sheet2: 已录入赛果
+  xml += '<Worksheet ss:Name="已录入赛果"><Table>';
+  xml += '<Row><Cell><Data ss:Type="String">预测时间</Data></Cell><Cell><Data ss:Type="String">编号</Data></Cell><Cell><Data ss:Type="String">联赛</Data></Cell><Cell><Data ss:Type="String">对阵</Data></Cell><Cell><Data ss:Type="String">全场比分</Data></Cell><Cell><Data ss:Type="String">半场比分</Data></Cell></Row>';
+  matchResults.forEach(m => {
+    xml += `<Row><Cell><Data ss:Type="String">${m.time}</Data></Cell><Cell><Data ss:Type="String">${m.matchId}</Data></Cell><Cell><Data ss:Type="String">${m.league}</Data></Cell><Cell><Data ss:Type="String">${m.teams}</Data></Cell><Cell><Data ss:Type="String">${m.home}:${m.away}</Data></Cell><Cell><Data ss:Type="String">${m.halfHome}:${m.halfAway}</Data></Cell></Row>`;
+  });
+  xml += '</Table></Worksheet>';
+  
+  xml += '</Workbook>';
+  
+  const blob = new Blob([xml], { type: 'application/vnd.ms-excel' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `historical_stats_${new Date().toISOString().slice(0,10)}.json`;
+  a.download = `赛事历史数据库_${new Date().toISOString().slice(0,10)}.xls`;
   a.click();
   URL.revokeObjectURL(url);
-  showToast('历史数据已导出');
+  showToast('历史数据Excel已导出');
+}
+// 导出新录入的赛果（用于更新本地Excel）
+function exportNewMatchResults() {
+  const records = JSON.parse(localStorage.getItem('predictRecords') || '[]');
+  const processed = JSON.parse(localStorage.getItem('processedMatchResults') || '[]');
+  const processedSet = new Set(processed);
+  const newMatches = [];
+  
+  records.forEach(r => {
+    if (!r.matches || !r.results) return;
+    r.matches.forEach((m, idx) => {
+      const result = r.results[idx];
+      if (!result || result.home === undefined || result.away === undefined) return;
+      const matchKey = `${m.league || 'unknown'}_${m.teams || ''}_${r.time || ''}_${idx}`;
+      if (processedSet.has(matchKey)) return; // 已处理过的跳过
+      
+      const h = parseInt(result.home), a = parseInt(result.away);
+      const totalGoals = h + a;
+      let res = '平';
+      if (h > a) res = '胜';
+      else if (h < a) res = '负';
+      
+      let hafu = '';
+      if (result.halfHome !== undefined && result.halfAway !== undefined) {
+        const hh = parseInt(result.halfHome), ha = parseInt(result.halfAway);
+        let half = '平';
+        if (hh > ha) half = '胜';
+        else if (hh < ha) half = '负';
+        hafu = half + res;
+      }
+      
+      newMatches.push({
+        id: m.label || '',
+        time: r.time,
+        matchId: m.label || '',
+        league: m.league || '',
+        teams: m.teams || '',
+        score: `${h}:${a}`,
+        halfScore: result.halfHome !== undefined ? `${result.halfHome}:${result.halfAway}` : '',
+        result: res,
+        totalGoals: totalGoals,
+        hafu: hafu,
+        handicap: m.handicap || '',
+      });
+    });
+  });
+  
+  if (newMatches.length === 0) {
+    showToast('没有新赛果可导出');
+    return;
+  }
+  
+  const blob = new Blob([JSON.stringify(newMatches, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `new_match_results_${new Date().toISOString().slice(0,10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast(`已导出 ${newMatches.length} 场新赛果`);
 }
 // 从飞书拉取完整数据库（预测记录+球队缓存+赔率快照）
 async function syncFullDatabaseFromFeishu() {
