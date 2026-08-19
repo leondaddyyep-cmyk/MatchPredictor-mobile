@@ -3308,6 +3308,28 @@ async function syncAppConfigToFeishu() {
   if (!cfg.appId || !cfg.appSecret || !cfg.appToken || !cfg.tableId || !cfg.proxyUrl) return;
   try {
     const token = await getFeishuToken();
+    // 先删除旧的app_config记录
+    let allRecords = [];
+    let pageToken = '';
+    do {
+      const res = await fetch(cfg.proxyUrl + '/api/feishu?action=records', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ app_token: cfg.appToken, table_id: cfg.tableId, page_size: 100, page_token: pageToken })
+      });
+      const data = await res.json();
+      if (data.code === 0 && data.data && data.data.items) {
+        allRecords = allRecords.concat(data.data.items.filter(item => item.fields && item.fields.type === 'app_config').map(item => item.record_id));
+      }
+      pageToken = data.data && data.data.page_token ? data.data.page_token : '';
+    } while (pageToken);
+    if (allRecords.length > 0) {
+      await fetch(cfg.proxyUrl + '/api/feishu?action=records', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ app_token: cfg.appToken, table_id: cfg.tableId, records: allRecords })
+      });
+    }
     // 收集所有需要同步的基础配置
     const appConfig = {
       apiFootballKey: localStorage.getItem('apiFootballKey') || '',
