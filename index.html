@@ -961,6 +961,16 @@
         <div class="settings-hint" style="margin-top:8px;">表格字段：id(文本), time(文本), matchId(文本), teams(文本), league(文本), mode(文本), pick(文本), odds(文本), result(文本), status(文本)</div>
       </div>
       <div class="settings-section">
+        <div class="settings-title">📊 历史数据库</div>
+        <div class="settings-desc">不断积累比赛赛果，完善历史统计数据库，提升预测准确度。当前已收录 <span id="histLeagueCount">88</span> 个联赛，<span id="histMatchCount">83415</span> 场比赛。</div>
+        <div class="settings-actions">
+          <button class="btn-primary" onclick="updateHistoricalDatabase()">更新历史数据库</button>
+          <button class="btn-secondary" onclick="exportHistoricalData()">导出历史数据</button>
+          <span id="histUpdateStatus" class="settings-status"></span>
+        </div>
+        <div class="settings-hint" style="margin-top:8px;">录入赛果后点击更新，新赛果会自动合并到对应联赛的历史统计中，数据越多预测越准。</div>
+      </div>
+      <div class="settings-section">
         <div class="settings-title">数据使用说明</div>
         <div class="settings-desc">
           • 近10场场均进球/失球 → 修正泊松模型xG<br>
@@ -1980,14 +1990,15 @@ function analyzeMatch(m) {
       let adjXgH = xgH * leagueCoef;
       let adjXgA = xgA * leagueCoef;
       // 历史数据校准：使总进球期望符合联赛历史场均进球水平
-      let histStats = HISTORICAL_LEAGUE_STATS[m.league];
+      const histData = getHistoricalStats();
+      let histStats = histData[m.league];
       // 别名转换
       if (!histStats && LEAGUE_ALIAS[m.league]) {
-        histStats = HISTORICAL_LEAGUE_STATS[LEAGUE_ALIAS[m.league]];
+        histStats = histData[LEAGUE_ALIAS[m.league]];
       }
       // 模糊匹配：如果精确匹配失败，尝试包含匹配
       if (!histStats && m.league) {
-        for (const [key, val] of Object.entries(HISTORICAL_LEAGUE_STATS)) {
+        for (const [key, val] of Object.entries(histData)) {
           if (m.league.includes(key) || key.includes(m.league)) {
             histStats = val;
             break;
@@ -2848,6 +2859,12 @@ function showSettings() {
   const feishuOk = feishu.appId && feishu.appSecret && feishu.appToken && feishu.tableId;
   document.getElementById('feishuStatus').textContent = feishuOk ? '已配置' : '未配置';
   document.getElementById('feishuStatus').className = feishuOk ? 'settings-status ok' : 'settings-status err';
+  // 更新历史数据库统计
+  try {
+    const stats = getHistoricalStats();
+    document.getElementById('histLeagueCount').textContent = Object.keys(stats).length;
+    document.getElementById('histMatchCount').textContent = Object.values(stats).reduce((sum, s) => sum + (s.count || 0), 0).toLocaleString();
+  } catch(e) {}
   document.getElementById('settingsOverlay').classList.add('show');
 }
 function closeSettings() {
@@ -3335,6 +3352,8 @@ async function syncAppConfigToFeishu() {
       apiFootballKey: localStorage.getItem('apiFootballKey') || '',
       teamEnCache: JSON.parse(localStorage.getItem('teamEnCache') || '{}'),
       oddsHistory: JSON.parse(localStorage.getItem('oddsHistory') || '[]'),
+      historicalStats: localStorage.getItem('historicalStatsUpdated') || '',
+      processedMatches: localStorage.getItem('processedMatchResults') || '',
       syncTime: Date.now(),
     };
     const fields = {
@@ -3414,6 +3433,13 @@ async function syncAppConfigFromFeishu() {
         if (localOdds.length > 5) localOdds.splice(0, localOdds.length - 5);
         localStorage.setItem('oddsHistory', JSON.stringify(localOdds));
       }
+      // 恢复历史统计
+      if (latestConfig.historicalStats) {
+        localStorage.setItem('historicalStatsUpdated', latestConfig.historicalStats);
+      }
+      if (latestConfig.processedMatches) {
+        localStorage.setItem('processedMatchResults', latestConfig.processedMatches);
+      }
       return true;
     }
     return false;
@@ -3421,6 +3447,122 @@ async function syncAppConfigFromFeishu() {
     console.warn('应用配置拉取失败:', e);
     return false;
   }
+}
+// ===== 历史数据库更新 =====
+// 获取当前历史统计（优先用本地更新后的，否则用默认）
+function getHistoricalStats() {
+  try {
+    const local = localStorage.getItem('historicalStatsUpdated');
+    if (local) return JSON.parse(local);
+  } catch(e) {}
+  return HISTORICAL_LEAGUE_STATS;
+}
+// 解析比分，返回胜平负、总进球、半全场
+function parseMatchResult(homeGoals, awayGoals, halfHome = null, halfAway = null) {
+  const h = parseInt(homeGoals), a = parseInt(awayGoals);
+  const totalGoals = h + a;
+  let result = '平';
+  if (h > a) result = '胜';
+  else if (h < a) result = '负';
+  // 半全场
+  let hafu = null;
+  if (halfHome !== null && halfAway !== null) {
+    const hh = parseInt(halfHome), ha = parseInt(halfAway);
+    let half = '平';
+    if (hh > ha) half = '胜';
+    else if (hh < ha) half = '负';
+    hafu = half + result;
+  }
+  return { result, totalGoals, hafu, score: `${h}:${a}` };
+}
+// 更新历史数据库：把已录入赛果的比赛合并到历史统计
+function updateHistoricalDatabase() {
+  const statusEl = document.getElementById('histUpdateStatus');
+  try {
+    const records = JSON.parse(localStorage.getItem('predictRecords') || '[]');
+    const stats = JSON.parse(JSON.stringify(getHistoricalStats()));
+    let added = 0, skipped = 0;
+    // 记录已处理的比赛（避免重复）
+    const processed = JSON.parse(localStorage.getItem('processedMatchResults') || '[]');
+    const processedSet = new Set(processed);
+    records.forEach(record => {
+      if (!record.matches || !record.results) return;
+      record.matches.forEach((m, idx) => {
+        const result = record.results[idx];
+        if (!result || result.home === undefined || result.away === undefined) return;
+        // 生成唯一ID
+        const matchKey = `${m.league || 'unknown'}_${m.teams || ''}_${record.time || ''}_${idx}`;
+        if (processedSet.has(matchKey)) { skipped++; return; }
+        // 解析赛果
+        const parsed = parseMatchResult(result.home, result.away, result.halfHome, result.halfAway);
+        const league = m.league || '未知联赛';
+        // 初始化联赛统计
+        if (!stats[league]) {
+          stats[league] = { count: 0, homeWinRate: 0, drawRate: 0, awayWinRate: 0, avgGoals: 0, goalsDist: {}, hafuTop: [], scoreTop: [] };
+        }
+        const s = stats[league];
+        const oldCount = s.count;
+        s.count++;
+        // 更新胜平负
+        const oldHomeWins = oldCount * s.homeWinRate / 100;
+        const oldDraws = oldCount * s.drawRate / 100;
+        const oldAwayWins = oldCount * s.awayWinRate / 100;
+        if (parsed.result === '胜') s.homeWinRate = ((oldHomeWins + 1) / s.count) * 100;
+        else if (parsed.result === '平') s.drawRate = ((oldDraws + 1) / s.count) * 100;
+        else s.awayWinRate = ((oldAwayWins + 1) / s.count) * 100;
+        // 更新场均进球
+        s.avgGoals = ((s.avgGoals * oldCount) + parsed.totalGoals) / s.count;
+        // 更新总进球分布
+        const tg = Math.min(parsed.totalGoals, 7);
+        s.goalsDist[tg] = (s.goalsDist[tg] || 0) + 1;
+        // 更新半全场TOP
+        if (parsed.hafu) {
+          const existing = s.hafuTop.find(x => x[0] === parsed.hafu);
+          if (existing) existing[1] = (existing[1] * oldCount + 100) / s.count;
+          else s.hafuTop.push([parsed.hafu, 100 / s.count]);
+          s.hafuTop.sort((a, b) => b[1] - a[1]);
+          if (s.hafuTop.length > 5) s.hafuTop.length = 5;
+        }
+        // 更新比分TOP
+        const existingScore = s.scoreTop.find(x => x[0] === parsed.score);
+        if (existingScore) existingScore[1] = (existingScore[1] * oldCount + 100) / s.count;
+        else s.scoreTop.push([parsed.score, 100 / s.count]);
+        s.scoreTop.sort((a, b) => b[1] - a[1]);
+        if (s.scoreTop.length > 5) s.scoreTop.length = 5;
+        processed.push(matchKey);
+        added++;
+      });
+    });
+    // 保存更新后的统计
+    localStorage.setItem('historicalStatsUpdated', JSON.stringify(stats));
+    localStorage.setItem('processedMatchResults', JSON.stringify(processed));
+    // 更新显示
+    const leagueCount = Object.keys(stats).length;
+    const totalMatches = Object.values(stats).reduce((sum, s) => sum + (s.count || 0), 0);
+    document.getElementById('histLeagueCount').textContent = leagueCount;
+    document.getElementById('histMatchCount').textContent = totalMatches.toLocaleString();
+    statusEl.textContent = `更新成功，新增${added}场，跳过${skipped}场`;
+    statusEl.className = 'settings-status ok';
+    showToast(`历史数据库更新完成，新增${added}场比赛`);
+    // 同步到飞书
+    syncAppConfigToFeishu();
+  } catch(e) {
+    console.error('更新历史数据库失败:', e);
+    statusEl.textContent = '更新失败：' + e.message;
+    statusEl.className = 'settings-status err';
+  }
+}
+// 导出历史数据为JSON
+function exportHistoricalData() {
+  const stats = getHistoricalStats();
+  const blob = new Blob([JSON.stringify(stats, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `historical_stats_${new Date().toISOString().slice(0,10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('历史数据已导出');
 }
 // 从飞书拉取完整数据库（预测记录+球队缓存+赔率快照）
 async function syncFullDatabaseFromFeishu() {
