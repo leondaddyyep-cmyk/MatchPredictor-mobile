@@ -3313,7 +3313,7 @@ async function autoUploadToFeishu(allResults) {
   if (!cfg.appId || !cfg.appSecret || !cfg.appToken || !cfg.tableId || !cfg.proxyUrl) return;
   try {
     const token = await getFeishuToken();
-    // 先删除当天的旧预测记录
+    // 先删除当天的旧预测记录（用status字段识别预测记录）
     const today = new Date().toLocaleDateString('zh-CN');
     let oldRecords = [];
     let pageToken = '';
@@ -3326,8 +3326,9 @@ async function autoUploadToFeishu(allResults) {
       const data = await res.json();
       if (data.code === 0 && data.data && data.data.items) {
         data.data.items.forEach(item => {
-          if (item.fields && item.fields.type === 'prediction' && item.fields.time) {
-            const rDate = new Date(item.fields.time.replace(/\//g, '-')).toLocaleDateString('zh-CN');
+          // 用status字段识别预测记录，用type字段（时间）判断是否当天
+          if (item.fields && item.fields.status && item.fields.type) {
+            const rDate = new Date(item.fields.type.replace(/\//g, '-')).toLocaleDateString('zh-CN');
             if (rDate === today) oldRecords.push(item.record_id);
           }
         });
@@ -3341,7 +3342,7 @@ async function autoUploadToFeishu(allResults) {
         body: JSON.stringify({ app_token: cfg.appToken, table_id: cfg.tableId, records: oldRecords })
       });
     }
-    // 上传新预测记录（一场比赛一行，预测内容合并显示）
+    // 上传新预测记录（4列：时间、比赛、预测、状态）
     allResults.forEach(m => {
       // 把所有玩法预测整理成多行文本
       const playLines = [];
@@ -3350,14 +3351,14 @@ async function autoUploadToFeishu(allResults) {
         playLines.push(`${modeName}: ${p.opt}  @${p.odds}`);
       });
       const predictionText = playLines.join('\n');
+      // 比赛信息合并：编号 对阵 联赛
+      const matchInfo = `${m.label || ''} ${m.teams || ''} ${m.league || ''}`.trim();
+      const timeStr = new Date().toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
       
       uploadPredictionToFeishu({
-        type: 'prediction',
-        time: new Date().toLocaleString('zh-CN', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }),
-        matchId: m.label,
-        teams: m.teams || '',
-        league: m.league || '',
-        mode: predictionText, // 所有预测合并到一个字段，换行显示
+        type: timeStr, // 时间放到主字段
+        teams: matchInfo, // 比赛信息
+        mode: predictionText, // 预测内容
         status: '待赛果',
       });
     });
@@ -5286,7 +5287,7 @@ async function syncMatchResultsToFeishu(records) {
   if (!cfg.appId || !cfg.appSecret || !cfg.appToken || !cfg.tableId || !cfg.proxyUrl) return;
   try {
     const token = await getFeishuToken();
-    // 获取飞书表格里所有预测记录
+    // 获取飞书表格里所有预测记录（用status字段识别）
     let allRecords = [];
     let pageToken = '';
     do {
@@ -5298,7 +5299,7 @@ async function syncMatchResultsToFeishu(records) {
       const data = await res.json();
       if (data.code === 0 && data.data && data.data.items) {
         data.data.items.forEach(item => {
-          if (item.fields && item.fields.type === 'prediction') allRecords.push(item);
+          if (item.fields && item.fields.status) allRecords.push(item);
         });
       }
       pageToken = data.data && data.data.page_token ? data.data.page_token : '';
@@ -5312,10 +5313,10 @@ async function syncMatchResultsToFeishu(records) {
         if (!result || result.home === undefined || result.away === undefined) return;
         
         // 在飞书记录中查找匹配
+        const matchInfo = `${m.label || ''} ${m.teams || ''} ${m.league || ''}`.trim();
         const match = allRecords.find(item => {
-          const fMatchId = item.fields.matchId || '';
           const fTeams = item.fields.teams || '';
-          return fMatchId === m.label && fTeams === m.teams;
+          return fTeams === matchInfo || (m.teams && fTeams.includes(m.teams));
         });
         
         if (match) {
@@ -5330,11 +5331,12 @@ async function syncMatchResultsToFeishu(records) {
           let status = '未中';
           if (allHit) status = '全中';
           else if (anyHit) status = '部分中';
+          // 赛果合并到状态里
+          const statusWithResult = `${status} ${result.home}:${result.away}`;
           
           // 更新飞书记录
           const updateFields = {
-            'result': `${result.home}:${result.away}`,
-            'status': status,
+            'status': statusWithResult,
           };
           fetch(cfg.proxyUrl + '/api/feishu?action=records', {
             method: 'PUT',
