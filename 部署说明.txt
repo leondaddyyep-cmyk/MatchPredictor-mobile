@@ -1,0 +1,37 @@
+# 赛事预测 - 手机版部署说明
+
+## 文件说明
+- `index.html` - 主应用
+- `manifest.json` - PWA 配置（添加到主屏幕所需）
+- `sw.js` - Service Worker（离线支持）
+
+## 部署方式（任选一种）
+
+### 方式一：Netlify（最简单，推荐）
+1. 打开 https://app.netlify.com/drop
+2. 把整个「赛事预测手机版」文件夹拖进去
+3. 等待几秒，得到一个网址（如 https://xxx.netlify.app）
+4. 手机 Safari 打开这个网址
+
+### 方式二：Vercel
+1. 打开 https://vercel.com
+2. 用 GitHub 账号登录
+3. 点 "Add New" → "Project" → 上传文件夹
+4. 部署后得到网址
+
+### 方式三：GitHub Pages
+1. 新建一个 GitHub 仓库
+2. 上传这三个文件
+3. Settings → Pages → 选择 main 分支 → Save
+4. 等待1分钟，得到 https://用户名.github.io/仓库名/
+
+## 添加到主屏幕（像App一样用）
+1. iPhone 用 Safari 打开部署后的网址
+2. 点底部分享按钮（方框+向上箭头）
+3. 选择「添加到主屏幕」
+4. 主屏幕会出现「赛事预测」图标，点开就是全屏App
+
+## 注意
+- 体彩赔率需要联网获取，预测功能本身可以离线用
+- 第一次打开会自动缓存，之后打开更快
+- 预测记录保存在手机本地，清除浏览器数据会丢失
